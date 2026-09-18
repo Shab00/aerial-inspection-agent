@@ -7,3 +7,7 @@ output/
 *.xlsm
 !templates/template.xlsm
 .DS_Store
+.env
+venv/
+uploads/
+output/
