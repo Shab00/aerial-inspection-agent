@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+.env
+uploads/
+output/
+*.xlsm
+!templates/template.xlsm
+.DS_Store
