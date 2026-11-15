@@ -1,6 +1,7 @@
 import datetime
+import uuid
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 
@@ -96,8 +97,10 @@ class TreeSurvey(BaseModel):
 
 class AerialInspectionSurvey(BaseModel):
     trees: list[TreeSurvey]
-    survey_id: str
-    generated_at: str
+    survey_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    generated_at: str = Field(
+        default_factory=lambda: datetime.datetime.now().isoformat(timespec="seconds")
+    )
 
     @field_validator("trees")
     @classmethod
