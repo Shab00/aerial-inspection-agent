@@ -91,7 +91,8 @@ def _normalize(text: str) -> str:
 
 
 def enforce_quotes(extracted: dict, transcript: str) -> dict:
-    """Null out any field whose quote is empty or not verbatim in the transcript."""
+    """Null out any field whose quote is empty or not verbatim in the transcript,
+    or whose string value is empty or not verbatim in its own quote."""
     normalized_transcript = _normalize(transcript)
     enforced = {}
     for field in _FIELDS:
@@ -100,6 +101,11 @@ def enforce_quotes(extracted: dict, transcript: str) -> dict:
         if not isinstance(quote, str) or not _normalize(quote):
             enforced[field] = None
         elif _normalize(quote) not in normalized_transcript:
+            enforced[field] = None
+        elif isinstance(entry.get("value"), str) and (
+            not _normalize(entry["value"])
+            or _normalize(entry["value"]) not in _normalize(quote)
+        ):
             enforced[field] = None
         else:
             enforced[field] = entry
