@@ -94,7 +94,19 @@ def _set_tree_fields(ws, tree: TreeSurvey) -> None:
     ws[DATE_CELL] = datetime.datetime.strptime(tree.date, "%Y-%m-%d")
 
 
-def _set_prf_fields(ws, prf: PRFFeature) -> None:
+def _find_photo(photos_dir: str | None, tree_ref: int, prf_number: int) -> str | None:
+    if photos_dir is None or not os.path.isdir(photos_dir):
+        return None
+    prefix = f"T{tree_ref}_PRF{prf_number}."
+    for name in sorted(os.listdir(photos_dir)):
+        if name.startswith(prefix):
+            return os.path.join(photos_dir, name)
+    return None
+
+
+def _set_prf_fields(
+    ws, prf: PRFFeature, tree_ref: int, photos_dir: str | None
+) -> None:
     if not 1 <= prf.prf_number <= MAX_PRF_SLOTS:
         raise ValueError(f"prf_number {prf.prf_number} out of range 1-{MAX_PRF_SLOTS}")
     col = _prf_column(prf.prf_number)
@@ -103,8 +115,10 @@ def _set_prf_fields(ws, prf: PRFFeature) -> None:
         if attr == "droppings":
             value = "Yes" if value else "No"
         ws.cell(row=row, column=col).value = value
-    if prf.photo_path:
-        embed_photo(ws, prf.photo_path, PHOTO_ROW, col)
+    # An explicit photo_path wins; otherwise fall back to an uploaded file.
+    photo = prf.photo_path or _find_photo(photos_dir, tree_ref, prf.prf_number)
+    if photo:
+        embed_photo(ws, photo, PHOTO_ROW, col)
 
 
 def embed_photo(ws, photo_path: str, row: int, col: int) -> None:
@@ -136,7 +150,9 @@ def embed_photo(ws, photo_path: str, row: int, col: int) -> None:
     ws.add_image(img, f"{col_letter}{row}")
 
 
-def build_tree_sheet(wb: openpyxl.Workbook, tree: TreeSurvey, sheet_name: str) -> None:
+def build_tree_sheet(
+    wb: openpyxl.Workbook, tree: TreeSurvey, sheet_name: str, photos_dir: str | None
+) -> None:
     master = wb[_MASTER_WORKING_NAME]
     ws = wb.copy_worksheet(master)
     ws.title = sheet_name
@@ -144,10 +160,12 @@ def build_tree_sheet(wb: openpyxl.Workbook, tree: TreeSurvey, sheet_name: str) -
     _clear_tree_sheet_data(ws)
     _set_tree_fields(ws, tree)
     for prf in tree.prfs:
-        _set_prf_fields(ws, prf)
+        _set_prf_fields(ws, prf, tree.tree_ref, photos_dir)
 
 
-def build_excel(survey: AerialInspectionSurvey, output_path: str) -> str:
+def build_excel(
+    survey: AerialInspectionSurvey, output_path: str, photos_dir: str | None = None
+) -> str:
     wb = load_template()
 
     # Free up every "T*" sheet name (the worked examples and obsolete draft
@@ -161,7 +179,7 @@ def build_excel(survey: AerialInspectionSurvey, output_path: str) -> str:
             del wb[name]
 
     for tree in survey.trees:
-        build_tree_sheet(wb, tree, f"T{tree.tree_ref}")
+        build_tree_sheet(wb, tree, f"T{tree.tree_ref}", photos_dir)
 
     del wb[_MASTER_WORKING_NAME]
 
