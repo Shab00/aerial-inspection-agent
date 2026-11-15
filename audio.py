@@ -112,12 +112,21 @@ def enforce_quotes(extracted: dict, transcript: str) -> dict:
     return enforced
 
 
+WHISPER_DOMAIN_PROMPT = (
+    "Bat roost survey. Terms: PRF, DBH, W3W, potential roost feature, "
+    "droppings, crevice, woodpecker hole, lift-off, torpor, substrate, "
+    "apex, aspect."
+)
+
+
 def transcribe_audio(file_path: str) -> str:
     client = _get_client()
     with open(file_path, "rb") as f:
         transcript = client.audio.transcriptions.create(
             model="whisper-1",
             file=f,
+            # The hosted API's equivalent of local Whisper's initial_prompt.
+            prompt=WHISPER_DOMAIN_PROMPT,
         )
     return transcript.text
 
