@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from openai import OpenAI
 
@@ -13,41 +14,96 @@ def _get_client() -> OpenAI:
     return _client
 
 
-EXTRACTION_SYSTEM_PROMPT = """You are processing aerial tree inspection audio notes for a bat survey. Extract ONLY text description fields from the transcript.
+SYSTEM_PROMPT = """You are processing aerial tree inspection audio notes for a bat survey. You extract text fields from a transcript under strict evidence rules.
 
-You must NEVER extract, estimate or calculate:
-- Any measurements (heights, widths, depths)
-- PRF suitability ratings
-- Overall tree suitability
+EVIDENCE RULES (absolute):
+- NEVER invent, infer, guess, or paraphrase a field. Only record what the surveyor actually said.
+- Every non-null field MUST include "quote": an exact, contiguous span copied character-for-character from the transcript. Do not fix spelling, reorder words, join separate phrases, or add words.
+- If you cannot point to the exact words in the transcript that support a field, return null for that field.
+- null is ALWAYS correct when the surveyor did not say it. When in doubt, return null.
 
-Extract ONLY these text fields if mentioned:
-- feature_type: type of PRF feature
-- aspect: compass direction
-- orientation: facing direction
-- bat_notes: any bat observations mentioned
+FORBIDDEN (always null / never extract):
+- NEVER calculate, estimate, or extract any number, measurement, height, width, depth, diameter, percentage, temperature, cloud cover, or wind.
+- NEVER assign a suitability rating (PRF-I, PRF-M, Negligible). Suitability is not one of your fields; never put a rating in any field.
+
+FIELDS (extract only these):
+- feature_type: type of PRF feature (e.g. rot hole, split, flaking bark)
+- substrate: surface texture described inside the feature
+- aspect: compass direction of the feature
+- orientation: direction the feature faces or runs
+- bat_notes: any bat observations
+- droppings: true or false, ONLY if the surveyor explicitly states droppings were or were not present
 - smell: any smell described
-- substrate: surface texture described
-- humidity_condition: moisture conditions
-- apex_shape: shape of the apex
-- competitors: other species mentioned
-- inspection_notes_1: surveyor's description of the feature
+- humidity_condition: moisture conditions described
+- apex_shape: shape of the feature's apex
+- competitors: other species mentioned using the feature
+- inspection_notes_1, inspection_notes_2, inspection_notes_3: the surveyor's own descriptive notes about the feature, each a separate verbatim statement. Only use these for observations about the feature that are not already captured in another field. Never use them for procedural or filler speech (tree/PRF identifiers, "moving on", "that's it"); return null instead.
 
-Return JSON with only the fields you found.
-If a field is not mentioned return null.
-Never invent values not spoken in the audio."""
+For each field return either null or {"value": ..., "quote": "..."}. "value" must be taken from the quoted words, not reworded."""
 
-_ALLOWED_FIELDS = {
+_TEXT_FIELDS = [
     "feature_type",
+    "substrate",
     "aspect",
     "orientation",
     "bat_notes",
     "smell",
-    "substrate",
     "humidity_condition",
     "apex_shape",
     "competitors",
     "inspection_notes_1",
+    "inspection_notes_2",
+    "inspection_notes_3",
+]
+_FIELDS = _TEXT_FIELDS[:5] + ["droppings"] + _TEXT_FIELDS[5:]
+
+
+def _field_schema(value_type: str) -> dict:
+    return {
+        "anyOf": [
+            {"type": "null"},
+            {
+                "type": "object",
+                "properties": {
+                    "value": {"type": value_type},
+                    "quote": {"type": "string"},
+                },
+                "required": ["value", "quote"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        field: _field_schema("boolean" if field == "droppings" else "string")
+        for field in _FIELDS
+    },
+    "required": _FIELDS,
+    "additionalProperties": False,
 }
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def enforce_quotes(extracted: dict, transcript: str) -> dict:
+    """Null out any field whose quote is empty or not verbatim in the transcript."""
+    normalized_transcript = _normalize(transcript)
+    enforced = {}
+    for field in _FIELDS:
+        entry = extracted.get(field)
+        quote = entry.get("quote") if isinstance(entry, dict) else None
+        if not isinstance(quote, str) or not _normalize(quote):
+            enforced[field] = None
+        elif _normalize(quote) not in normalized_transcript:
+            enforced[field] = None
+        else:
+            enforced[field] = entry
+    return enforced
 
 
 def transcribe_audio(file_path: str) -> str:
@@ -64,9 +120,17 @@ def extract_text_fields(transcript: str, tree_ref: int, prf_number: int) -> dict
     client = _get_client()
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        response_format={"type": "json_object"},
+        temperature=0,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "prf_extraction",
+                "strict": True,
+                "schema": SCHEMA,
+            },
+        },
         messages=[
-            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": (
@@ -81,5 +145,11 @@ def extract_text_fields(transcript: str, tree_ref: int, prf_number: int) -> dict
         extracted = json.loads(content)
     except (TypeError, ValueError):
         extracted = {}
+    if not isinstance(extracted, dict):
+        extracted = {}
 
-    return {field: extracted.get(field) for field in _ALLOWED_FIELDS if field in extracted}
+    enforced = enforce_quotes(extracted, transcript)
+    return {
+        field: entry["value"] if entry is not None else None
+        for field, entry in enforced.items()
+    }
